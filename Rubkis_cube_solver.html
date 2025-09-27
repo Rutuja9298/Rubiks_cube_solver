@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Rubik's Cube - Simple Solver (reverse-scramble)</title>
+  <style>
+    body{font-family: system-ui, Arial; padding:20px; background:#f6f7fb}
+    h1{margin:0 0 12px}
+    .controls{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+    button, select{padding:8px 10px;border-radius:8px;border:1px solid #ccc;background:white;cursor:pointer}
+    .cube-area{display:flex;gap:24px}
+    .net{display:grid;grid-template-columns:repeat(12,28px);grid-auto-rows:28px;gap:4px}
+    .cell{width:28px;height:28px;border-radius:4px;border:1px solid #ddd;box-sizing:border-box}
+    .legend{margin-top:8px}
+    .moves-log{max-height:320px;overflow:auto;border:1px solid #ddd;padding:10px;background:white;border-radius:8px}
+    .btn-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:6px;max-width:520px}
+    .small{font-size:13px;padding:6px}
+    pre{white-space:pre-wrap}
+  </style>
+</head>
+<body>
+  <h1>Rubik's Cube — Simple demo & reverse-scramble "solver"</h1>
+  <p>This demo implements an OOP cube representation, manual face rotations, scramble generation and an automatic solver that reverses the scramble moves (so it will always solve cubes scrambled by this app). The moveset uses standard face notation: U, D, L, R, F, B (with primes <code>'</code> and <code>2</code>).</p>
+
+  <div class="controls">
+    <button id="scrambleBtn">Scramble (25 moves)</button>
+    <button id="solveBtn">Solve (reverse scramble)</button>
+    <button id="stepSolveBtn">Step-by-step solve</button>
+    <button id="resetBtn">Reset to solved</button>
+    <select id="animSpeed">
+      <option value="300">Animation 300ms</option>
+      <option value="150">Fast 150ms</option>
+      <option value="600">Slow 600ms</option>
+    </select>
+  </div>
+
+  <div class="cube-area">
+    <div>
+      <div id="net" class="net"></div>
+      <div class="legend">
+        <small>Colors: <strong>W</strong>=white, <strong>R</strong>=red, <strong>G</strong>=green, <strong>Y</strong>=yellow, <strong>O</strong>=orange, <strong>B</strong>=blue</small>
+      </div>
+    </div>
+
+    <div style="flex:1;min-width:320px">
+      <div style="margin-bottom:8px"><strong>Manual moves</strong></div>
+      <div class="btn-grid">
+        <button class="small" data-move="U">U</button>
+        <button class="small" data-move="U'">U'</button>
+        <button class="small" data-move="U2">U2</button>
+        <button class="small" data-move="R">R</button>
+        <button class="small" data-move="R'">R'</button>
+        <button class="small" data-move="R2">R2</button>
+        <button class="small" data-move="F">F</button>
+        <button class="small" data-move="F'">F'</button>
+        <button class="small" data-move="F2">F2</button>
+        <button class="small" data-move="D">D</button>
+        <button class="small" data-move="D'">D'</button>
+        <button class="small" data-move="D2">D2</button>
+        <button class="small" data-move="L">L</button>
+        <button class="small" data-move="L'">L'</button>
+        <button class="small" data-move="L2">L2</button>
+        <button class="small" data-move="B">B</button>
+        <button class="small" data-move="B'">B'</button>
+        <button class="small" data-move="B2">B2</button>
+      </div>
+
+      <div style="margin-top:12px">
+        <div style="margin-bottom:6px"><strong>Move history / steps</strong></div>
+        <div class="moves-log" id="movesLog"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  // Simple OOP Rubik's Cube representation
+  // Face order used here: U, L, F, R, B, D (each face is an array of 9 stickers, indices: 0..8 left-to-right, top-to-bottom)
+
+  class Cube {
+    constructor() { this.reset(); }
+
+    reset() {
+      // Use colors: W, O, G, R, B, Y for U,L,F,R,B,D respectively
+      this.faces = {
+        U: Array(9).fill('W'),
+        L: Array(9).fill('O'),
+        F: Array(9).fill('G'),
+        R: Array(9).fill('R'),
+        B: Array(9).fill('B'),
+        D: Array(9).fill('Y')
+      };
+    }
+
+    clone() { const c = new Cube(); c.faces = JSON.parse(JSON.stringify(this.faces)); return c; }
+
+    // rotate a face clockwise (1), counter-clockwise (3), or twice (2)
+    rotateFace(face, times=1) {
+      times = ((times%4)+4)%4; // normalize
+      for (let t=0;t<times;t++){
+        const f = this.faces[face].slice();
+        // clockwise mapping
+        this.faces[face][0]=f[6]; this.faces[face][1]=f[3]; this.faces[face][2]=f[0];
+        this.faces[face][3]=f[7]; this.faces[face][4]=f[4]; this.faces[face][5]=f[1];
+        this.faces[face][6]=f[8]; this.faces[face][7]=f[5]; this.faces[face][8]=f[2];
+      }
+    }
+
+    // apply a cycle of 12 stickers (4 groups of 3) — used for side effects when rotating a face
+    applyCycle(cycleSpec, times=1) {
+      times = ((times%4)+4)%4;
+      if (times===0) return;
+      const tmp = cycleSpec.map(([face,idx]) => this.faces[face][idx]);
+      const shift = (3*times) % 12; // move groups of three
+      for (let i=0;i<12;i++){
+        const from = (i - shift + 12) % 12;
+        const [face, idx] = cycleSpec[i];
+        this.faces[face][idx] = tmp[from];
+      }
+    }
+
+    // Define cycles for moves based on the net (U above center strip: L F R B)
+    moveSingle(m) {
+      // m is one of U,R,F,D,L,B; rotate cw by 1
+      switch(m){
+        case 'U':
+          this.rotateFace('U',1);
+          this.applyCycle([
+            ['L',0],['L',1],['L',2],
+            ['F',0],['F',1],['F',2],
+            ['R',0],['R',1],['R',2],
+            ['B',0],['B',1],['B',2]
+          ],1);
+          break;
+        case 'D':
+          this.rotateFace('D',1);
+          this.applyCycle([
+            ['L',6],['L',7],['L',8],
+            ['B',6],['B',7],['B',8],
+            ['R',6],['R',7],['R',8],
+            ['F',6],['F',7],['F',8]
+          ],1);
+          break;
+        case 'R':
+          this.rotateFace('R',1);
+          this.applyCycle([
+            ['U',2],['U',5],['U',8],
+            ['F',2],['F',5],['F',8],
+            ['D',2],['D',5],['D',8],
+            ['B',6],['B',3],['B',0]
+          ],1);
+          break;
+        case 'L':
+          this.rotateFace('L',1);
+          this.applyCycle([
+            ['U',0],['U',3],['U',6],
+            ['B',8],['B',5],['B',2],
+            ['D',0],['D',3],['D',6],
+            ['F',0],['F',3],['F',6]
+          ],1);
+          break;
+        case 'F':
+          this.rotateFace('F',1);
+          this.applyCycle([
+            ['U',6],['U',7],['U',8],
+            ['R',0],['R',3],['R',6],
+            ['D',2],['D',1],['D',0],
+            ['L',8],['L',5],['L',2]
+          ],1);
+          break;
+        case 'B':
+          this.rotateFace('B',1);
+          this.applyCycle([
+            ['U',2],['U',1],['U',0],
+            ['L',0],['L',3],['L',6],
+            ['D',6],['D',7],['D',8],
+            ['R',8],['R',5],['R',2]
+          ],1);
+          break;
+        default: throw new Error('Unknown move '+m);
+      }
+    }
+
+    // apply a move string like "R", "R'", "R2"
+    apply(moveStr){
+      // parse
+      let base = moveStr[0];
+      let suffix = moveStr.slice(1);
+      let times = 1;
+      if (suffix === "2") times = 2;
+      else if (suffix === "'") times = 3; // three cw = one ccw
+      for (let i=0;i<times;i++) this.moveSingle(base);
+    }
+
+    // apply an algorithm string like "U R' F2 D" (space separated)
+    alg(algstr){
+      const tokens = algstr.trim().split(/\s+/).filter(Boolean);
+      tokens.forEach(t=>this.apply(t));
+    }
+
+    // fast check whether solved
+    isSolved(){
+      return ['U','L','F','R','B','D'].every(f=>this.faces[f].every(x=>x===this.faces[f][4]));
+    }
+
+    // export as 54-char string in order U,L,F,R,B,D (9 per face)
+    toFaceletString(){
+      return ['U','L','F','R','B','D'].map(f=>this.faces[f].join('')).join('');
+    }
+  }
+
+  // --- UI / rendering ---
+  const netEl = document.getElementById('net');
+  const movesLog = document.getElementById('movesLog');
+  const scrambleBtn = document.getElementById('scrambleBtn');
+  const solveBtn = document.getElementById('solveBtn');
+  const stepSolveBtn = document.getElementById('stepSolveBtn');
+  const resetBtn = document.getElementById('resetBtn');
+  const animSpeed = document.getElementById('animSpeed');
+
+  const cube = new Cube();
+  let lastScramble = [];
+
+  // create 12x9 grid skeleton for net (12 columns x 9 rows -> net layout)
+  // We'll place stickers according to the net diagram: U at cols 3..5 row 0..2, L F R B in a row, D at row 6..8
+  const cellMap = [];
+  function buildNetCells(){
+    netEl.innerHTML = '';
+    // 9 rows, 12 cols
+    for (let r=0;r<9;r++){
+      for (let c=0;c<12;c++){
+        const div = document.createElement('div'); div.className='cell';
+        netEl.appendChild(div);
+        cellMap.push(div);
+      }
+    }
+  }
+  buildNetCells();
+
+  // determine positions for each face's sticker in the net
+  const placements = {
+    U: {r:0,c:3},
+    L: {r:3,c:0},
+    F: {r:3,c:3},
+    R: {r:3,c:6},
+    B: {r:3,c:9},
+    D: {r:6,c:3}
+  };
+
+  function setStickerAt(r,c,color){
+    const idx = r*12 + c;
+    const el = cellMap[idx];
+    if(!el) return;
+    el.style.background = colorToCSS(color);
+    el.textContent = color; // show letter
+  }
+
+  function colorToCSS(letter){
+    switch(letter){
+      case 'W': return '#ffffff';
+      case 'R': return '#d11f1f';
+      case 'G': return '#1fa33f';
+      case 'Y': return '#ffd54a';
+      case 'O': return '#f3971f';
+      case 'B': return '#2f6dd7';
+      default: return '#999';
+    }
+  }
+
+  function renderCube() {
+    // clear
+    for (let i=0;i<cellMap.length;i++){ cellMap[i].style.background='transparent'; cellMap[i].textContent=''; }
+    const faces = cube.faces;
+    Object.keys(placements).forEach(face=>{
+      const base = placements[face];
+      for (let i=0;i<9;i++){
+        const rr = base.r + Math.floor(i/3);
+        const cc = base.c + (i%3);
+        setStickerAt(rr, cc, faces[face][i]);
+      }
+    });
+  }
+
+  function log(msg){
+    const pre = document.createElement('div'); pre.textContent = msg; movesLog.appendChild(pre); movesLog.scrollTop = movesLog.scrollHeight;
+  }
+
+  // hook up manual move buttons
+  document.querySelectorAll('[data-move]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const mv = btn.dataset.move;
+      cube.apply(mv);
+      log('Applied: '+mv);
+      renderCube();
+    });
+  });
+
+  scrambleBtn.addEventListener('click', ()=>{
+    const moves = ["U","R","F","D","L","B"];
+    const suffix = ["","'","2"];
+    const seq = [];
+    const len = 25;
+    let prevFace = null;
+    for (let i=0;i<len;i++){
+      let face = moves[Math.floor(Math.random()*moves.length)];
+      // avoid same face twice
+      while(face === prevFace) face = moves[Math.floor(Math.random()*moves.length)];
+      prevFace = face;
+      const suf = suffix[Math.floor(Math.random()*suffix.length)];
+      seq.push(face + suf);
+    }
+    // apply and record
+    seq.forEach(m=>cube.apply(m));
+    lastScramble = seq.slice();
+    log('Scrambled: '+seq.join(' '));
+    renderCube();
+  });
+
+  solveBtn.addEventListener('click', ()=>{
+    if (!lastScramble.length){ alert('No recorded scramble to reverse. Use the Scramble button or make manual moves first.'); return; }
+    const inv = invertAlg(lastScramble).join(' ');
+    log('Solving by reversing scramble: '+inv);
+    cube.alg(inv);
+    renderCube();
+    log('Solved? '+(cube.isSolved()));
+  });
+
+  stepSolveBtn.addEventListener('click', ()=>{
+    if (!lastScramble.length){ alert('No recorded scramble to reverse. Use the Scramble button or make manual moves first.'); return; }
+    const inv = invertAlg(lastScramble);
+    let i=0;
+    const speed = parseInt(animSpeed.value,10);
+    const timer = setInterval(()=>{
+      if (i>=inv.length){ clearInterval(timer); log('Step-solve finished. Solved? '+cube.isSolved()); return; }
+      cube.apply(inv[i]);
+      log('Step: '+inv[i]);
+      renderCube(); i++;
+    }, speed);
+  });
+
+  resetBtn.addEventListener('click', ()=>{ cube.reset(); lastScramble=[]; movesLog.innerHTML=''; renderCube(); log('Reset to solved state'); });
+
+  function invertAlg(arr){
+    // arr is array of moves, invert the sequence (reverse order + invert each move)
+    function invertMove(m){
+      if (m.endsWith("2")) return m; // self-inverse
+      if (m.endsWith("'")) return m.slice(0,-1);
+      return m+"'";
+    }
+    return arr.slice().reverse().map(invertMove);
+  }
+
+  // initial render
+  renderCube(); log('Ready. Use the Scramble button to generate a cube or apply manual moves.');
+
+  </script>
+</body>
+</html>
